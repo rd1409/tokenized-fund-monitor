@@ -1,0 +1,11 @@
+{
+  "name": "tokenized-fund-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tokenized Fund Monitor: tokenized Treasury and money market funds vs. buying T-bills directly. Vercel + Turso.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test --no-warnings test/*.test.js"
+  }
+}

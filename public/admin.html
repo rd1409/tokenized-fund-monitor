@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin · Tokenized Fund Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400&display=swap" rel="stylesheet">
+<style>
+:root{--fg:#1f1e1c;--muted:#6b6862;--bg:#faf9f6;--panel:#fff;--line:#e6e3dc;--accent:#c2603a;--ok:#2f7d4f;--bad:#b3362c;--r:10px}
+@media (prefers-color-scheme: dark){:root{--fg:#ecebe7;--muted:#a29e95;--bg:#1a1a18;--panel:#232321;--line:#36352f;--accent:#e08560;--ok:#6cc08b;--bad:#ef7d6f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 Inter,system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:32px 16px 64px;display:flex;flex-direction:column;gap:24px}
+h1{font:400 1.75rem "Source Serif 4",Georgia,serif;margin:0}
+h2{font-size:1.05rem;font-weight:500;margin:0 0 4px}
+p{margin:0}.muted{color:var(--muted);font-size:.8125rem}
+a{color:inherit}
+section{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px;display:flex;flex-direction:column;gap:12px}
+label{display:flex;flex-direction:column;gap:4px;font-size:.8125rem;color:var(--muted)}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+textarea{min-height:120px;font-family:ui-monospace,Menlo,monospace;font-size:.8125rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr));gap:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-weight:500;border:0;border-radius:8px;padding:9px 14px;background:var(--accent);color:#fff;cursor:pointer}
+button.secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:default}
+.status{font-size:.8125rem;min-height:1.2em;white-space:pre-wrap}
+.status.ok{color:var(--ok)}.status.bad{color:var(--bad)}
+.newfund{display:none}.newfund.on{display:grid}
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>Admin</h1>
+    <p class="muted">Tokenized Fund Monitor · <a href="/">Back to the monitor</a></p>
+  </div>
+
+  <section>
+    <h2>Admin token</h2>
+    <p class="muted">The ADMIN_TOKEN you set in Vercel. It stays in this browser tab only and is sent with each action below.</p>
+    <label>Token<input id="token" type="password" autocomplete="current-password"></label>
+  </section>
+
+  <section>
+    <h2>Database</h2>
+    <p class="muted">Run “Set up database” once after deploying. It creates the tables and loads the starting data; running it again never overwrites newer numbers. T-bill rates also refresh automatically every weekday evening.</p>
+    <div class="row">
+      <button id="setup">Set up database</button>
+      <button id="tbills" class="secondary">Refresh T-bill rates now</button>
+    </div>
+    <p class="status" id="dbstatus"></p>
+  </section>
+
+  <section>
+    <h2>Record fund numbers</h2>
+    <p class="muted">Copy the latest figures from the fund's rwa.xyz page. Each date is saved as its own snapshot, so you build history; saving the same fund and date again replaces that day.</p>
+    <div class="grid">
+      <label>Fund<select id="fund"></select></label>
+      <label>As of<input id="as_of" type="date"></label>
+    </div>
+    <div class="grid newfund" id="newfund">
+      <label>Ticker<input id="new_ticker" placeholder="OUSG"></label>
+      <label>Full name<input id="name"></label>
+      <label>Manager<input id="manager"></label>
+      <label>Platform<input id="platform"></label>
+      <label>Management fee<input id="mgmt_fee" placeholder="0.15%"></label>
+      <label>Source page<input id="source" placeholder="https://app.rwa.xyz/assets/…"></label>
+    </div>
+    <div class="grid">
+      <label>7-day APY %<input id="apy_7d_pct" inputmode="decimal"></label>
+      <label>30-day APY %<input id="apy_30d_pct" inputmode="decimal"></label>
+      <label>NAV $<input id="nav" inputmode="decimal"></label>
+      <label>On-chain price $ (blank if none)<input id="secondary_price" inputmode="decimal"></label>
+      <label>Total assets $<input id="aum_usd" inputmode="decimal"></label>
+      <label>30-day asset change %<input id="aum_chg_30d_pct" inputmode="decimal"></label>
+      <label>Holders<input id="holders" inputmode="numeric"></label>
+      <label>Chains<input id="chains" inputmode="numeric"></label>
+    </div>
+    <label>Supply by network (optional, one per line: <code>Network, amount</code>)<textarea id="networks" placeholder="Ethereum, 239986136.06&#10;Solana, 917104177.92"></textarea></label>
+    <div class="row"><button id="save">Save snapshot</button></div>
+    <p class="status" id="fundstatus"></p>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const tokenEl = $('token');
+  try { tokenEl.value = sessionStorage.getItem('tfm-admin') || ''; } catch {}
+  tokenEl.addEventListener('input', () => { try { sessionStorage.setItem('tfm-admin', tokenEl.value); } catch {} });
+
+  const say = (el, text, ok) => { el.textContent = text; el.className = 'status ' + (ok === true ? 'ok' : ok === false ? 'bad' : ''); };
+  async function call(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value.trim(), ...(opts.headers || {}) } });
+    const body = await res.json().catch(() => ({ error: 'HTTP ' + res.status }));
+    if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    return body;
+  }
+  async function busy(btn, fn) { btn.disabled = true; try { await fn(); } finally { btn.disabled = false; } }
+
+  $('setup').addEventListener('click', e => busy(e.target, async () => {
+    say($('dbstatus'), 'Setting up…');
+    try { const r = await call('/api/setup', { method: 'POST' }); say($('dbstatus'), `Ready: ${r.counts.funds} funds, ${r.counts.snapshots} snapshots, ${r.counts.terms} term sets, ${r.counts.chain_rows} chain rows, ${r.counts.tbill_days} days of T-bill rates.`, true); loadFunds(); }
+    catch (err) { say($('dbstatus'), err.message, false); }
+  }));
+  $('tbills').addEventListener('click', e => busy(e.target, async () => {
+    say($('dbstatus'), 'Fetching from the U.S. Treasury…');
+    try { const r = await call('/api/cron/tbills', { method: 'POST' }); say($('dbstatus'), `Saved ${r.days} days of rates through ${r.latest}.`, true); }
+    catch (err) { say($('dbstatus'), err.message, false); }
+  }));
+
+  let funds = [], chains = [];
+  const fields = ['apy_7d_pct', 'apy_30d_pct', 'nav', 'secondary_price', 'aum_usd', 'aum_chg_30d_pct', 'holders', 'chains'];
+  function fill() {
+    const f = funds.find(x => x.fund === $('fund').value);
+    $('newfund').classList.toggle('on', !f);
+    fields.forEach(k => $(k).value = f && f[k] != null ? f[k] : '');
+    $('networks').value = f ? chains.filter(c => c.fund === f.fund).map(c => `${c.network}, ${c.supply_usd}`).join('\n') : '';
+  }
+  async function loadFunds() {
+    try {
+      const d = await fetch('/api/data?fresh=' + Date.now(), { cache: 'no-store' }).then(r => r.json());
+      funds = d.funds || []; chains = d.chains || [];
+    } catch { funds = []; chains = []; }
+    const sel = $('fund'), keep = sel.value; sel.innerHTML = '';
+    funds.forEach(f => sel.add(new Option(`${f.fund} — ${f.name}`, f.fund)));
+    sel.add(new Option('+ Add a new fund', '__new'));
+    if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+    fill();
+  }
+  $('fund').addEventListener('change', fill);
+  $('as_of').value = new Date().toLocaleDateString('en-CA');
+
+  $('save').addEventListener('click', e => busy(e.target, async () => {
+    const isNew = $('fund').value === '__new';
+    const body = { fund: isNew ? $('new_ticker').value : $('fund').value, as_of: $('as_of').value };
+    fields.forEach(k => body[k] = $(k).value.trim());
+    if (isNew) ['name', 'manager', 'platform', 'mgmt_fee', 'source'].forEach(k => body[k] = $(k).value.trim());
+    const lines = $('networks').value.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length) {
+      body.networks = [];
+      for (const l of lines) {
+        const i = l.lastIndexOf(',');
+        if (i < 1) { say($('fundstatus'), `Can't read “${l}”. Use: Network, amount`, false); return; }
+        body.networks.push({ network: l.slice(0, i).trim(), supply_usd: Number(l.slice(i + 1).replace(/[$,\s]/g, '')) });
+      }
+    }
+    say($('fundstatus'), 'Saving…');
+    try {
+      const r = await call('/api/fund', { method: 'POST', body: JSON.stringify(body) });
+      say($('fundstatus'), `Saved ${r.saved.fund} for ${r.saved.as_of}. The monitor shows it within 5 minutes.`, true);
+      await loadFunds(); $('fund').value = r.saved.fund; fill();
+    } catch (err) { say($('fundstatus'), err.message, false); }
+  }));
+
+  loadFunds();
+})();
+</script>
+</body>
+</html>

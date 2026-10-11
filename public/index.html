@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokenized Fund Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+:root{
+  --font-anthropic-sans:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-anthropic-serif:"Source Serif 4",Georgia,serif;
+  --color-fg:#1f1e1c;--color-fg-muted:#6b6862;--color-bg:#faf9f6;--color-panel:#ffffff;--color-border-line:#e6e3dc;
+  --color-ok:#2f7d4f;--color-warn:#a8650c;--color-bad:#b3362c;
+  --cds-text-secondary:#6b6862;--cds-surface-popover:#ffffff;--cds-border:#e6e3dc;--cds-shadow-popover:0 4px 16px rgba(0,0,0,.12);
+  --cds-chart-muted:#c9c4b8;--cds-chart-grid:#ece9e2;--cds-chart-axis:#cfcac0;--cds-chart-reference:#9a958b;
+  --cds-font-size-caption:.8125rem;--cds-font-size-body:.9375rem;--cds-font-size-heading:1.125rem;--cds-font-size-title:1.75rem;
+  --cds-font-weight-medium:500;--cds-radius:10px;
+  --cds-gap-xs:4px;--cds-gap-sm:8px;--cds-gap-md:16px;--cds-gap-lg:24px;--cds-gap-xl:36px;
+  --cds-pad-xs:4px;--cds-pad-sm:8px;--cds-pad-md:12px;--cds-pad-lg:18px;--cds-dur-slow:.4s;
+  --series-0:#c2603a;--series-1:#3b6ea8;--series-2:#7a5ab8;
+}
+@media (prefers-color-scheme: dark){:root{
+  --color-fg:#ecebe7;--color-fg-muted:#a29e95;--color-bg:#1a1a18;--color-panel:#232321;--color-border-line:#36352f;
+  --color-ok:#6cc08b;--color-warn:#e0a54a;--color-bad:#ef7d6f;
+  --cds-text-secondary:#a29e95;--cds-surface-popover:#2b2a27;--cds-border:#3d3c36;--cds-shadow-popover:0 4px 16px rgba(0,0,0,.5);
+  --cds-chart-muted:#55534c;--cds-chart-grid:#2f2e2a;--cds-chart-axis:#45443e;--cds-chart-reference:#7d796f;
+  --series-0:#e08560;--series-1:#7aa7dd;--series-2:#ad8ee6;
+}}
+html,body{margin:0;background:var(--color-bg);color:var(--color-fg)}
+#dash-root{max-width:1180px;margin:0 auto;padding:32px 16px 64px}
+.dash-skeleton{background:var(--cds-chart-grid);border-radius:var(--cds-radius);animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.5}}
+.foot{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption);margin-top:var(--cds-gap-xl)}
+.foot a{color:inherit}
+.err{color:var(--color-bad);font-size:var(--cds-font-size-body);margin:var(--cds-gap-sm) 0 0}
+.tm .kpi .val.ok{color:var(--color-ok)}.tm .kpi .val.warn{color:var(--color-warn)}
+</style>
+<script>
+// Small data runtime: loads everything from /api/data (Turso) once and runs the page's calcs.
+(function(){
+  const keys = ['funds', 'terms', 'tbills', 'chains', 'history'];
+  const store = {}, calcs = {}, listeners = [];
+  keys.forEach(k => store[k] = {status:'loading', data:[]});
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const run = () => listeners.forEach(fn => { try { fn(); } catch (e) { console.error(e); } });
+  window.dash = {
+    meta: {lastRefresh: null, error: null},
+    get colors(){ return [css('--series-0'), css('--series-1'), css('--series-2')]; },
+    data(id){
+      if (store[id]) return store[id];
+      const c = calcs[id]; if (!c) return {status:'missing', data:[]};
+      const ins = c.inputs.map(i => dash.data(i));
+      if (ins.some(i => i.status === 'error')) return {status:'error', data:[]};
+      if (ins.some(i => i.status !== 'ok')) return {status:'loading', data:[]};
+      try { return {status:'ok', data:c.fn(...ins.map(i => i.data))}; } catch (e) { console.error(e); return {status:'error', data:[]}; }
+    },
+    calc(id, spec){ calcs[id] = spec; },
+    onData(fn){ listeners.push(fn); fn(); }
+  };
+  fetch('/api/data').then(r => r.json().catch(() => ({error: 'HTTP ' + r.status})).then(b => { if (!r.ok) throw b; return b; }))
+    .then(d => { keys.forEach(k => store[k] = {status:'ok', data:d[k] || []}); dash.meta.lastRefresh = d.lastRefresh; })
+    .catch(e => { keys.forEach(k => store[k] = {status:'error', data:[]}); dash.meta.error = (e && (e.hint || e.error)) || 'Could not load data.'; })
+    .finally(run);
+  let w = 0; addEventListener('resize', () => { if (innerWidth !== w) { w = innerWidth; run(); } });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', run);
+})();
+</script>
+</head>
+<body>
+<div id="dash-root">
+<style>
+#dash-root .tm{font-family:var(--font-anthropic-sans);color:var(--color-fg);display:flex;flex-direction:column;gap:var(--cds-gap-xl)}
+.tm h1{font-family:var(--font-anthropic-serif);font-weight:400;font-size:var(--cds-font-size-title);margin:0}
+.tm h2{font-size:var(--cds-font-size-heading);font-weight:var(--cds-font-weight-medium);margin:0 0 var(--cds-gap-sm)}
+.tm h3{font-size:var(--cds-font-size-body);font-weight:var(--cds-font-weight-medium);margin:0}
+.tm .sub,.tm .note{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption);margin:var(--cds-gap-xs) 0 0}
+.tm .take{font-size:var(--cds-font-size-body);margin:var(--cds-gap-sm) 0 0;max-width:60rem}
+.tm .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:var(--cds-gap-md)}
+.tm .card{background:var(--color-panel);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:var(--cds-pad-lg);display:flex;flex-direction:column;gap:var(--cds-gap-sm);min-width:0}
+.tm .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:var(--cds-gap-md)}
+.tm .kpi .lab{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption)}
+.tm .kpi .val{font-family:var(--font-anthropic-serif);font-weight:400;font-size:var(--cds-font-size-title);font-variant-numeric:tabular-nums;line-height:1.2}
+.tm .kpi .dv{font-size:var(--cds-font-size-caption);font-variant-numeric:tabular-nums}
+.tm .bad{color:var(--color-bad)}.tm .ok{color:var(--color-ok)}.tm .warn{color:var(--color-warn)}
+.tm .chart{position:relative;min-height:220px}
+.tm .tip{position:absolute;background:var(--cds-surface-popover);border:1px solid var(--cds-border);border-radius:var(--cds-radius);box-shadow:var(--cds-shadow-popover);padding:var(--cds-pad-xs) var(--cds-pad-sm);font-size:var(--cds-font-size-caption);pointer-events:none;display:none;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tm .tip .k{color:var(--cds-text-secondary)}
+.tm table{border-collapse:collapse;width:100%;font-size:var(--cds-font-size-body);font-variant-numeric:tabular-nums}
+.tm th{text-align:left;color:var(--color-fg-muted);font-weight:var(--cds-font-weight-medium);font-size:var(--cds-font-size-caption);padding:var(--cds-pad-xs) var(--cds-pad-sm) var(--cds-pad-xs) 0;border-bottom:1px solid var(--color-border-line)}
+.tm td{padding:var(--cds-pad-sm) var(--cds-pad-sm) var(--cds-pad-sm) 0;border-bottom:1px solid var(--color-border-line);vertical-align:top}
+.tm dl{margin:0;display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:var(--cds-gap-xs) var(--cds-gap-md);font-size:var(--cds-font-size-body)}
+.tm dt{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption);padding-top:2px}
+.tm dd{margin:0}
+.tm .tag{display:inline-block;font-size:var(--cds-font-size-caption);color:var(--color-fg-muted);border:1px solid var(--color-border-line);border-radius:999px;padding:0 var(--cds-pad-sm)}
+.tm [data-dash-source-state=empty]{color:transparent}
+.tm [data-dash-source-state=refreshing]{opacity:.5;transition:opacity var(--cds-dur-slow)}
+.tm .fail{display:flex;align-items:center;justify-content:center;gap:var(--cds-gap-xs);min-height:inherit;color:var(--color-fg-muted);font-size:var(--cds-font-size-caption)}
+.tm .fail::before{content:"";width:.375rem;height:.375rem;border-radius:50%;background:var(--color-bad)}
+</style>
+
+<div class="tm">
+  <header id="top">
+    <h1>Tokenized Fund Monitor</h1>
+    <p class="err" id="loaderr" hidden></p>
+    <p class="take" id="takeaway" data-source="spreads">—</p>
+    <p class="sub">Fund data as of <span id="funddate">—</span> · T-bill rates as of <span id="billdate" data-source="tbills">—</span> close (U.S. Treasury)</p>
+  </header>
+
+  <section id="funds">
+    <div class="grid" id="fcards"></div>
+  </section>
+
+  <section id="yield">
+    <h2>Net yield vs buying T-bills directly</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Yield today, same basis</h3>
+        <p class="note">Fund APYs (daily compounding, after fund fees) converted to a simple annual rate so they compare with T-bill coupon-equivalent yields. Bills bought directly have no fees.</p>
+        <div class="chart" id="ybars" data-source="yield_compare"></div>
+      </div>
+      <div class="card">
+        <h3>T-bill yields this month</h3>
+        <p class="note">Coupon-equivalent yield on the latest bill of each term, daily close. Dashed lines: fund yields on the same basis.</p>
+        <div class="chart" id="bline" data-source="tbills yield_compare"></div>
+      </div>
+    </div>
+    <p class="note">Before tax. T-bill interest is exempt from state and local income tax; money fund distributions are exempt only for the share earned directly on Treasuries (BUIDL, an offshore fund, generally not at all), so in a taxed state the real gap is wider than shown.</p>
+  </section>
+
+  <section id="price">
+    <h2>NAV vs on-chain price</h2>
+    <div class="card">
+      <p class="note">Premium or discount is measured only where a fund has a public on-chain price. BUIDL and BENJI have none: they trade privately among approved holders.</p>
+      <table id="ptable" data-source="funds" data-row-key="fund">
+        <thead><tr><th data-field="fund">Fund</th><th data-field="nav">NAV</th><th data-field="secondary_price">On-chain price</th><th data-source="premium" data-field="premium">Premium / discount</th><th data-field="holders">Holders</th><th data-field="chains">Chains</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="terms">
+    <h2>Mint, redeem, settle and fees</h2>
+    <div class="grid" id="tcards"></div>
+  </section>
+
+  <section id="chains">
+    <h2>Where the tokens sit</h2>
+    <div class="grid" id="ccards"></div>
+  </section>
+  <p class="foot"><span id="lastrefresh"></span> Sources: <span id="fundsources"></span><a href="https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_bill_rates">U.S. Treasury daily bill rates</a> · issuer documents · TreasuryDirect. Not investment advice. <a href="/admin">Admin</a></p>
+</div>
+
+<script>
+dash.calc('yield_compare', {
+  title: 'Yields on one basis',
+  description: 'Fund 7-day APYs converted to simple annual rates beside the latest T-bill coupon-equivalent yields.',
+  inputs: ['funds', 'tbills'],
+  fn: (funds, tbills) => {
+    const last = tbills.slice().sort((a, b) => a.date < b.date ? -1 : 1).at(-1);
+    const simple = apy => 365 * (Math.pow(1 + Number(apy) / 100, 1 / 365) - 1) * 100;
+    const out = funds.filter(f => f.apy_7d_pct != null).map(f => ({label: f.fund, kind: 'fund', yield_pct: +simple(f.apy_7d_pct).toFixed(3)}));
+    [['w4','4-week bill'],['w13','13-week bill'],['w26','26-week bill'],['w52','52-week bill']]
+      .forEach(([k, l]) => out.push({label: l, kind: 'bill', yield_pct: Number(last[k])}));
+    return out;
+  }
+});
+dash.calc('spreads', {
+  title: 'Fund yield minus 4-week bill',
+  description: 'Each fund\'s simple-rate yield minus the latest 4-week T-bill yield, in basis points.',
+  inputs: ['yield_compare'],
+  fn: (yield_compare) => {
+    const bill = yield_compare.find(r => r.label === '4-week bill').yield_pct;
+    return yield_compare.filter(r => r.kind === 'fund').map(r => ({fund: r.label, fund_yield_pct: r.yield_pct, bill_4w_pct: bill, spread_bp: Math.round((r.yield_pct - bill) * 100)}));
+  }
+});
+dash.calc('premium', {
+  title: 'Premium to NAV',
+  description: 'On-chain price over NAV minus one; blank where there is no public price.',
+  inputs: ['funds'],
+  fn: (funds) => funds.map(f => ({fund: f.fund, premium: f.secondary_price == null ? null : f.secondary_price / f.nav - 1}))
+});
+
+(() => {
+  const pct = v => d3.format('.2f')(+v) + '%';
+  const compact = new Intl.NumberFormat('en', {notation: 'compact', maximumFractionDigits: 2, style: 'currency', currency: 'USD'});
+  const fmt = {
+    pct, bp: v => (v > 0 ? '+' : '') + v + ' bp', usd2: v => d3.format('.2f')(+v),
+    big: v => compact.format(+v), chg: v => (v > 0 ? '+' : '') + d3.format('.1f')(+v) + '%'
+  };
+  const root = document.querySelector('.tm');
+  const fail = el => { el.innerHTML = ''; const d = document.createElement('div'); d.className = 'fail'; d.textContent = 'Failed to load'; el.appendChild(d); };
+  const skel = (el, on) => el.classList.toggle('dash-skeleton', on);
+  const tipFor = box => { let t = box.querySelector('.tip'); if (!t) { t = document.createElement('div'); t.className = 'tip'; box.appendChild(t); } return t; };
+  const showTip = (box, t, x, y, k, v) => {
+    t.innerHTML = ''; const a = document.createElement('div'); a.className = 'k'; a.textContent = k; const b = document.createElement('div'); b.textContent = v; t.append(a, b);
+    t.style.display = 'block'; const w = t.offsetWidth; t.style.left = Math.max(0, Math.min(box.clientWidth - w, x - w / 2)) + 'px'; t.style.top = Math.max(0, y - t.offsetHeight - 8) + 'px';
+  };
+  const cleanAxis = g => g.attr('font-size', null).attr('font-family', null).call(s => s.selectAll('text').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)')).call(s => s.select('.domain').attr('stroke', 'var(--cds-chart-axis)')).call(s => s.selectAll('.tick line').attr('stroke', 'var(--cds-chart-grid)'));
+
+  function barChart(box, rows) {
+    box.innerHTML = '';
+    const W = box.clientWidth, rowH = 34, H = rows.length * rowH + 28;
+    const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+    const probe = svg.append('text').style('font-size', 'var(--cds-font-size-caption)');
+    const lw = d3.max(rows, r => (probe.text(r.label), probe.node().getComputedTextLength())) + 10; probe.remove();
+    const x = d3.scaleLinear([0, d3.max(rows, r => r.yield_pct) * 1.12], [lw, W - 8]);
+    const y = d3.scaleBand(rows.map(r => r.label), [0, H - 24]).padding(0.28);
+    svg.append('g').attr('transform', `translate(0,${H - 24})`).call(d3.axisBottom(x).ticks(Math.max(2, Math.floor(W / 90))).tickFormat(d => d + '%').tickSizeInner(-(H - 24))).call(cleanAxis).call(g => g.select('.domain').remove());
+    const tip = tipFor(box);
+    svg.append('g').selectAll('rect').data(rows).join('rect')
+      .attr('x', x(0)).attr('y', r => y(r.label)).attr('height', Math.min(y.bandwidth(), 32)).attr('rx', 4)
+      .attr('width', r => x(r.yield_pct) - x(0))
+      .attr('fill', r => r.kind === 'fund' ? dash.colors[0] : 'var(--cds-chart-muted)')
+      .on('mousemove', (e, r) => { const [mx, my] = d3.pointer(e, box); showTip(box, tip, mx, my, r.label, pct(r.yield_pct)); })
+      .on('mouseleave', () => tip.style.display = 'none');
+    svg.append('g').selectAll('text.l').data(rows).join('text').attr('x', lw - 8).attr('y', r => y(r.label) + y.bandwidth() / 2).attr('dy', '0.35em').attr('text-anchor', 'end').attr('fill', 'var(--color-fg)').style('font-size', 'var(--cds-font-size-caption)').text(r => r.label);
+    svg.append('g').selectAll('text.v').data(rows).join('text').attr('x', r => x(r.yield_pct) + 4).attr('y', r => y(r.label) + y.bandwidth() / 2).attr('dy', '0.35em').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)').style('font-variant-numeric', 'tabular-nums').text(r => pct(r.yield_pct));
+  }
+
+  function lineChart(box, bills, funds) {
+    box.innerHTML = '';
+    const series = [['w4', '4-wk'], ['w13', '13-wk'], ['w26', '26-wk'], ['w52', '52-wk']];
+    const pts = bills.map(b => ({d: new Date(b.date + 'T00:00:00Z'), ...b})).sort((a, b) => a.d - b.d);
+    const W = box.clientWidth, H = 220, m = {t: 10, b: 24, l: 40};
+    const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+    const probe = svg.append('text').style('font-size', 'var(--cds-font-size-caption)');
+    const rw = d3.max(series, s => (probe.text(`${s[1]} ${pct(pts.at(-1)[s[0]])}`), probe.node().getComputedTextLength())) + 10; probe.remove();
+    const vals = pts.flatMap(p => series.map(s => +p[s[0]])).concat(funds.map(f => f.yield_pct));
+    const y = d3.scaleLinear([d3.min(vals) - 0.1, d3.max(vals) + 0.1], [H - m.b, m.t]);
+    const x = d3.scaleUtc(d3.extent(pts, p => p.d), [m.l, W - rw]);
+    svg.append('g').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(d => d3.format('.1f')(d) + '%').tickSizeInner(-(W - rw - m.l))).call(cleanAxis).call(g => g.select('.domain').remove());
+    svg.append('g').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(Math.max(2, Math.min(pts.length, Math.floor((W - rw) / 70)))).tickFormat(d3.utcFormat('%b %-d'))).call(cleanAxis);
+    funds.forEach((f, i) => {
+      svg.append('line').attr('x1', m.l).attr('x2', W - rw).attr('y1', y(f.yield_pct)).attr('y2', y(f.yield_pct)).attr('stroke', dash.colors[i + 1]).attr('stroke-width', 1.5).attr('stroke-dasharray', '4 3');
+    });
+    const lab = [];
+    series.forEach(([k, n], i) => {
+      svg.append('path').datum(pts).attr('fill', 'none').attr('stroke', i === 0 ? dash.colors[0] : 'var(--cds-chart-muted)').attr('stroke-width', 2).attr('stroke-linejoin', 'round').attr('stroke-linecap', 'round').attr('d', d3.line(p => x(p.d), p => y(+p[k])));
+      lab.push({y: y(+pts.at(-1)[k]), t: `${n} ${pct(pts.at(-1)[k])}`, c: i === 0 ? 'var(--color-fg)' : 'var(--color-fg-muted)'});
+    });
+    funds.forEach((f, i) => lab.push({y: y(f.yield_pct), t: `${f.label} ${pct(f.yield_pct)}`, c: dash.colors[i + 1]}));
+    lab.sort((a, b) => a.y - b.y); for (let i = 1; i < lab.length; i++) if (lab[i].y - lab[i - 1].y < 13) lab[i].y = lab[i - 1].y + 13;
+    svg.append('g').selectAll('text').data(lab).join('text').attr('x', W - rw + 6).attr('y', d => d.y).attr('dy', '0.35em').attr('fill', d => d.c).style('font-size', 'var(--cds-font-size-caption)').style('font-variant-numeric', 'tabular-nums').text(d => d.t);
+    const tip = tipFor(box), rule = svg.append('line').attr('stroke', 'var(--cds-chart-reference)').attr('y1', m.t).attr('y2', H - m.b).style('display', 'none');
+    svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - rw - m.l).attr('height', H - m.b - m.t).attr('fill', 'transparent')
+      .on('mousemove', e => { const [mx, my] = d3.pointer(e, box); const p = pts[d3.leastIndex(pts, q => Math.abs(x(q.d) - mx))]; rule.style('display', null).attr('x1', x(p.d)).attr('x2', x(p.d));
+        showTip(box, tip, x(p.d), my, d3.utcFormat('%b %-d')(p.d), series.map(([k, n]) => `${n} ${pct(p[k])}`).join(' · ')); })
+      .on('mouseleave', () => { tip.style.display = 'none'; rule.style('display', 'none'); });
+  }
+
+  function chainChart(box, rows) {
+    box.innerHTML = '';
+    rows = rows.slice().sort((a, b) => b.supply_usd - a.supply_usd);
+    const W = box.clientWidth, H = rows.length * 26 + 6;
+    const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+    const probe = svg.append('text').style('font-size', 'var(--cds-font-size-caption)');
+    const lw = d3.max(rows, r => (probe.text(r.network), probe.node().getComputedTextLength())) + 10;
+    const vw = d3.max(rows, r => (probe.text(compact.format(r.supply_usd)), probe.node().getComputedTextLength())) + 8; probe.remove();
+    const x = d3.scaleLinear([0, d3.max(rows, r => r.supply_usd)], [lw, W - vw]);
+    const y = d3.scaleBand(rows.map(r => r.network), [0, H]).padding(0.3);
+    const tip = tipFor(box), tot = d3.sum(rows, r => r.supply_usd);
+    svg.selectAll('rect').data(rows).join('rect').attr('x', lw).attr('y', r => y(r.network)).attr('height', y.bandwidth()).attr('rx', 4).attr('width', r => Math.max(2, x(r.supply_usd) - lw)).attr('fill', dash.colors[0])
+      .on('mousemove', (e, r) => { const [mx, my] = d3.pointer(e, box); showTip(box, tip, mx, my, r.network, `${compact.format(r.supply_usd)} · ${d3.format('.1%')(r.supply_usd / tot)}`); })
+      .on('mouseleave', () => tip.style.display = 'none');
+    svg.selectAll('text.l').data(rows).join('text').attr('x', lw - 8).attr('y', r => y(r.network) + y.bandwidth() / 2).attr('dy', '0.35em').attr('text-anchor', 'end').attr('fill', 'var(--color-fg)').style('font-size', 'var(--cds-font-size-caption)').text(r => r.network);
+    svg.selectAll('text.v').data(rows).join('text').attr('x', r => Math.max(lw + 2, x(r.supply_usd)) + 4).attr('y', r => y(r.network) + y.bandwidth() / 2).attr('dy', '0.35em').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)').style('font-variant-numeric', 'tabular-nums').text(r => compact.format(r.supply_usd));
+  }
+
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const fmtv = (f, v) => v == null ? '—' : f(v);
+  const kpi = (label, val, sub, valCls, subCls) => {
+    const d = el('div', 'kpi'); d.append(el('div', 'lab', label));
+    const v = el('div', 'val', val); if (valCls) v.classList.add(valCls); d.appendChild(v);
+    const s = el('div', 'dv', sub); if (subCls) s.classList.add(subCls); d.appendChild(s); return d;
+  };
+  const termFields = [['eligibility','Who can buy'],['min_buy','Minimum to buy'],['min_redeem','Minimum to redeem'],['fees','Fees'],['mint_settlement','Buying / minting'],['redeem_settlement','Redeeming'],['secondary','Trading before redemption'],['tax_note','State tax']];
+
+  dash.onData(() => {
+    const F = dash.data('funds'), T = dash.data('tbills'), Y = dash.data('yield_compare'), S = dash.data('spreads'), P = dash.data('premium'), TR = dash.data('terms'), C = dash.data('chains');
+
+    const le = document.getElementById('loaderr');
+    le.hidden = !dash.meta.error; le.textContent = dash.meta.error ? 'Data didn’t load: ' + dash.meta.error : '';
+
+    const fc = document.getElementById('fcards'); fc.innerHTML = '';
+    if (F.status === 'ok') F.data.forEach(f => {
+      const sp = S.status === 'ok' ? S.data.find(r => r.fund === f.fund) : null;
+      const pr = P.status === 'ok' ? P.data.find(p => p.fund === f.fund) : null;
+      const card = el('div', 'card');
+      const head = el('div');
+      const h = el('h3', null, f.fund + ' '); h.appendChild(el('span', 'tag', [f.manager, f.platform].filter(Boolean).join(' · ')));
+      head.append(h, el('p', 'note', f.name || ''));
+      const k = el('div', 'kpis');
+      k.append(
+        kpi('7-day APY (net)', fmtv(pct, f.apy_7d_pct), '30-day ' + fmtv(pct, f.apy_30d_pct)),
+        kpi('Vs 4-week T-bill', sp ? fmt.bp(sp.spread_bp) : '—', 'bond-equivalent basis', sp ? (sp.spread_bp < 0 ? 'warn' : 'ok') : null),
+        kpi('NAV / on-chain price', '$' + fmtv(fmt.usd2, f.nav), f.secondary_price == null ? 'No public quote' : '$' + d3.format('.4f')(f.secondary_price) + (pr && pr.premium != null ? ' (' + d3.format('+.2%')(pr.premium) + ')' : '')),
+        kpi('Assets', fmtv(fmt.big, f.aum_usd), f.aum_chg_30d_pct == null ? '' : fmt.chg(f.aum_chg_30d_pct) + ' vs 30 days ago', null, f.aum_chg_30d_pct == null ? null : (f.aum_chg_30d_pct < 0 ? 'bad' : 'ok'))
+      );
+      card.append(head, k); fc.appendChild(card);
+    }); else if (F.status === 'error') { fc.appendChild(el('div', 'card')); fail(fc.firstChild); }
+
+    const fd = document.getElementById('funddate');
+    fd.textContent = F.status === 'ok' && F.data.length ? d3.utcFormat('%b %-d, %Y')(new Date(d3.max(F.data, r => r.as_of) + 'T00:00:00Z')) : '—';
+
+    const bd = document.getElementById('billdate');
+    bd.textContent = T.status === 'ok' ? d3.utcFormat('%b %-d, %Y')(new Date(d3.max(T.data, r => r.date) + 'T00:00:00Z')) : '—';
+
+    const take = document.getElementById('takeaway');
+    if (S.status === 'ok' && S.data.length) {
+      const bill = pct(S.data[0].bill_4w_pct);
+      const below = S.data.filter(r => r.spread_bp < 0), above = S.data.filter(r => r.spread_bp >= 0);
+      const list = rs => rs.map(r => `${r.fund} by ${Math.abs(r.spread_bp)} bp`).join(', ');
+      take.textContent = !above.length
+        ? `Every fund tracked pays less than a 4-week T-bill bought directly (${bill}): ${list(below)}. That gap buys same-day minting, 24/7 transfers and on-chain collateral use.`
+        : `Against a 4-week T-bill bought directly (${bill}), ${above.length ? list(above) + ' above' : ''}${above.length && below.length ? '; ' : ''}${below.length ? list(below) + ' below' : ''}.`;
+    } else take.textContent = '—';
+
+    const yb = document.getElementById('ybars');
+    if (Y.status === 'ok') { skel(yb, false); barChart(yb, Y.data); } else if (Y.status === 'error') { skel(yb, false); fail(yb); } else { yb.innerHTML = ''; skel(yb, true); }
+
+    const bl = document.getElementById('bline');
+    if (T.status === 'ok' && Y.status === 'ok') { skel(bl, false); lineChart(bl, T.data, Y.data.filter(r => r.kind === 'fund')); } else if (T.status === 'error') { skel(bl, false); fail(bl); } else { bl.innerHTML = ''; skel(bl, true); }
+
+    const tb = document.querySelector('#ptable tbody'); tb.innerHTML = '';
+    if (F.status === 'ok') F.data.forEach(f => {
+      const pr = P.status === 'ok' ? P.data.find(p => p.fund === f.fund) : null;
+      const tr = document.createElement('tr');
+      [f.fund, '$' + fmtv(d3.format('.2f'), f.nav), f.secondary_price == null ? 'No public quote' : '$' + d3.format('.4f')(f.secondary_price), pr && pr.premium != null ? d3.format('+.2%')(pr.premium) : 'n/a', fmtv(d3.format(','), f.holders), fmtv(String, f.chains)]
+        .forEach(v => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+      tb.appendChild(tr);
+    });
+
+    const tc = document.getElementById('tcards'); tc.innerHTML = '';
+    if (TR.status === 'ok') TR.data.forEach(r => {
+      const card = document.createElement('div'); card.className = 'card';
+      const h = document.createElement('h3'); h.textContent = r.option; card.appendChild(h);
+      const dl = document.createElement('dl');
+      termFields.forEach(([k, l]) => {
+        const dt = document.createElement('dt'); dt.textContent = l;
+        const dd = document.createElement('dd'); dd.setAttribute('data-source', 'terms'); dd.setAttribute('data-field', k); dd.setAttribute('data-where', 'option=' + r.option); dd.textContent = r[k];
+        dl.append(dt, dd);
+      });
+      card.appendChild(dl); tc.appendChild(card);
+    }); else if (TR.status === 'error') fail(tc);
+
+    const cc = document.getElementById('ccards'); cc.innerHTML = '';
+    if (C.status === 'ok') [...new Set(C.data.map(r => r.fund))].forEach(fnd => {
+      const card = el('div', 'card'), rows = C.data.filter(r => r.fund === fnd);
+      card.append(el('h3', null, fnd + ' supply by network'), el('p', 'note', 'As of ' + d3.utcFormat('%b %-d, %Y')(new Date(rows[0].as_of + 'T00:00:00Z'))));
+      const box = el('div', 'chart'); card.appendChild(box); cc.appendChild(card);
+      chainChart(box, rows);
+    }); else if (C.status === 'error') { cc.appendChild(el('div', 'card chart')); fail(cc.firstChild); }
+
+    const lr = document.getElementById('lastrefresh');
+    const L = dash.meta.lastRefresh;
+    lr.textContent = L ? `T-bill rates last refreshed ${new Date(L.ran_at.replace(' ', 'T') + 'Z').toLocaleString()}${L.ok ? '' : ' (failed: ' + L.detail + ')'}.` : '';
+
+    const src = document.getElementById('fundsources'); src.innerHTML = '';
+    if (F.status === 'ok') F.data.filter(f => f.source).forEach(f => { const a = el('a', null, f.fund); a.href = f.source; a.rel = 'noopener'; src.append(a, ' · '); });
+  });
+})();
+</script>
+
+
+</div>
+</body>
+</html>
